@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os.path
-import numpy as np
-import orbslam2
+import orbslam3
 import time
 import cv2
 
@@ -12,12 +11,11 @@ def main(vocab_path, settings_path, path_to_left_folder, path_to_right_folder, p
     left_filenames, right_filenames, timestamps = load_images(path_to_left_folder, path_to_right_folder,
                                                               path_to_times_file)
 
-    # read stereo rectification parameters from settings
-    m1l, m2l, m1r, m2r = load_stereo_rectification(settings_path)
-
+    # ORB_SLAM3 rectifies the raw stereo pair itself, using the calibration
+    # (Camera1/Camera2, Stereo.T_c1_c2) in the settings file.
     num_images = len(left_filenames)
 
-    slam = orbslam2.System(vocab_path, settings_path, orbslam2.Sensor.STEREO)
+    slam = orbslam3.System(vocab_path, settings_path, orbslam3.Sensor.STEREO)
     slam.set_use_viewer(True)
     slam.initialize()
 
@@ -37,9 +35,6 @@ def main(vocab_path, settings_path, path_to_left_folder, path_to_right_folder, p
         if right_image is None:
             print("failed to load image at {0}".format(right_filenames[idx]))
             return 1
-
-        left_image = cv2.remap(left_image, m1l, m2l, cv2.INTER_LINEAR)
-        right_image = cv2.remap(right_image, m1r, m2r, cv2.INTER_LINEAR)
 
         t1 = time.time()
         slam.process_image_stereo(left_image, right_image, tframe)
@@ -81,30 +76,6 @@ def load_images(path_to_left, path_to_right, path_to_times_file):
             left_files.append(os.path.join(path_to_left, "{0}.png".format(line)))
             right_files.append(os.path.join(path_to_right, "{0}.png".format(line)))
     return left_files, right_files, timestamps
-
-
-def load_stereo_rectification(settings_path):
-    settings = cv2.FileStorage(settings_path, cv2.FileStorage_READ)
-    K_l = settings.getNode('LEFT.K').mat()
-    K_r = settings.getNode('RIGHT.K').mat()
-    P_l = settings.getNode('LEFT.P').mat()
-    P_r = settings.getNode('RIGHT.P').mat()
-    R_l = settings.getNode('LEFT.R').mat()
-    R_r = settings.getNode('RIGHT.R').mat()
-    D_l = settings.getNode('LEFT.D').mat()
-    D_r = settings.getNode('RIGHT.D').mat()
-    rows_l = int(settings.getNode('LEFT.height').real())
-    cols_l = int(settings.getNode('LEFT.width').real())
-    rows_r = int(settings.getNode('RIGHT.height').real())
-    cols_r = int(settings.getNode('RIGHT.width').real())
-
-    m1l, m2l = cv2.initUndistortRectifyMap(K_l, D_l, R_l, P_l[0:3, 0:3], (cols_l, rows_l), cv2.CV_32F)
-    m1r, m2r = cv2.initUndistortRectifyMap(K_r, D_r, R_r, P_r[0:3, 0:3], (cols_r, rows_r), cv2.CV_32F)
-    return m1l, m2l, m1r, m2r
-
-
-def load_cv_mat(yaml_mat):
-    return np.array(yaml_mat)
 
 
 def save_trajectory(trajectory, filename):

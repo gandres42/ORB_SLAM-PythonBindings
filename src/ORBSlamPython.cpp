@@ -1,12 +1,42 @@
 #define PY_ARRAY_UNIQUE_SYMBOL pbcvt_ARRAY_API
 #include <opencv2/core/core.hpp>
 #include <pyboostcvconverter/pyboostcvconverter.hpp>
-#include <ORB_SLAM2/KeyFrame.h>
-#include <ORB_SLAM2/Converter.h>
-#include <ORB_SLAM2/Tracking.h>
-#include <ORB_SLAM2/MapPoint.h>
-#include <ORB_SLAM2/Map.h>
+#include <ORB_SLAM3/Atlas.h>
+#include <ORB_SLAM3/ImuTypes.h>
+#include <ORB_SLAM3/KeyFrame.h>
+#include <ORB_SLAM3/Map.h>
+#include <ORB_SLAM3/MapPoint.h>
+#include <ORB_SLAM3/Tracking.h>
 #include "ORBSlamPython.h"
+
+namespace
+{
+// ORB_SLAM3::System keeps its tracker and atlas private and offers no accessors,
+// but the full per-frame trajectory (Tracking::mlRelativeFramePoses and friends)
+// and the keyframes only live there. Explicit template instantiations are exempt
+// from access checking ([temp.explicit]), which lets the bindings name those
+// members without patching ORB_SLAM3.
+template <typename Tag, typename Tag::type Member>
+struct PrivateMember
+{
+    friend typename Tag::type memberPointer(Tag) { return Member; }
+};
+
+struct SystemTracker
+{
+    typedef ORB_SLAM3::Tracking* ORB_SLAM3::System::*type;
+    friend type memberPointer(SystemTracker);
+};
+
+struct SystemAtlas
+{
+    typedef ORB_SLAM3::Atlas* ORB_SLAM3::System::*type;
+    friend type memberPointer(SystemAtlas);
+};
+
+template struct PrivateMember<SystemTracker, &ORB_SLAM3::System::mpTracker>;
+template struct PrivateMember<SystemAtlas, &ORB_SLAM3::System::mpAtlas>;
+}
 
 #if (PY_VERSION_HEX >= 0x03000000)
 static void* init_ar() {
@@ -24,46 +54,59 @@ static void init_ar() {
 #endif
 }
 
-BOOST_PYTHON_MODULE(orbslam2)
+BOOST_PYTHON_MODULE(orbslam3)
 {
+    using boost::python::arg;
+
     init_ar();
 
     boost::python::to_python_converter<cv::Mat, pbcvt::matToNDArrayBoostConverter>();
     pbcvt::matFromNDArrayBoostConverter();
 
-    boost::python::enum_<ORB_SLAM2::Tracking::eTrackingState>("TrackingState")
-        .value("SYSTEM_NOT_READY", ORB_SLAM2::Tracking::eTrackingState::SYSTEM_NOT_READY)
-        .value("NO_IMAGES_YET", ORB_SLAM2::Tracking::eTrackingState::NO_IMAGES_YET)
-        .value("NOT_INITIALIZED", ORB_SLAM2::Tracking::eTrackingState::NOT_INITIALIZED)
-        .value("OK", ORB_SLAM2::Tracking::eTrackingState::OK)
-        .value("LOST", ORB_SLAM2::Tracking::eTrackingState::LOST);
-    
-    boost::python::enum_<ORB_SLAM2::System::eSensor>("Sensor")
-        .value("MONOCULAR", ORB_SLAM2::System::eSensor::MONOCULAR)
-        .value("STEREO", ORB_SLAM2::System::eSensor::STEREO)
-        .value("RGBD", ORB_SLAM2::System::eSensor::RGBD);
+    boost::python::enum_<ORB_SLAM3::Tracking::eTrackingState>("TrackingState")
+        .value("SYSTEM_NOT_READY", ORB_SLAM3::Tracking::eTrackingState::SYSTEM_NOT_READY)
+        .value("NO_IMAGES_YET", ORB_SLAM3::Tracking::eTrackingState::NO_IMAGES_YET)
+        .value("NOT_INITIALIZED", ORB_SLAM3::Tracking::eTrackingState::NOT_INITIALIZED)
+        .value("OK", ORB_SLAM3::Tracking::eTrackingState::OK)
+        .value("RECENTLY_LOST", ORB_SLAM3::Tracking::eTrackingState::RECENTLY_LOST)
+        .value("LOST", ORB_SLAM3::Tracking::eTrackingState::LOST)
+        .value("OK_KLT", ORB_SLAM3::Tracking::eTrackingState::OK_KLT);
 
-    boost::python::class_<ORBSlamPython, boost::noncopyable>("System", boost::python::init<const char*, const char*, boost::python::optional<ORB_SLAM2::System::eSensor, const char*>>())
-        .def(boost::python::init<std::string, std::string, boost::python::optional<ORB_SLAM2::System::eSensor, std::string>>())
+    boost::python::enum_<ORB_SLAM3::System::eSensor>("Sensor")
+        .value("MONOCULAR", ORB_SLAM3::System::eSensor::MONOCULAR)
+        .value("STEREO", ORB_SLAM3::System::eSensor::STEREO)
+        .value("RGBD", ORB_SLAM3::System::eSensor::RGBD)
+        .value("IMU_MONOCULAR", ORB_SLAM3::System::eSensor::IMU_MONOCULAR)
+        .value("IMU_STEREO", ORB_SLAM3::System::eSensor::IMU_STEREO)
+        .value("IMU_RGBD", ORB_SLAM3::System::eSensor::IMU_RGBD);
+
+    // IMU measurements are optional: only the IMU_* sensor modes use them.
+    const boost::python::object noImu;
+
+    boost::python::class_<ORBSlamPython, boost::noncopyable>("System", boost::python::init<const char*, const char*, boost::python::optional<ORB_SLAM3::System::eSensor>>())
+        .def(boost::python::init<std::string, std::string, boost::python::optional<ORB_SLAM3::System::eSensor>>())
         .def("initialize", &ORBSlamPython::initialize)
-        .def("load_and_process_mono", &ORBSlamPython::loadAndProcessMono)
-        .def("process_image_mono", &ORBSlamPython::processMono)
-        .def("load_and_process_stereo", &ORBSlamPython::loadAndProcessStereo)
-        .def("process_image_stereo", &ORBSlamPython::processStereo)
-        .def("load_and_process_rgbd", &ORBSlamPython::loadAndProcessRGBD)
-        .def("process_image_rgbd", &ORBSlamPython::processRGBD)
+        .def("load_and_process_mono", &ORBSlamPython::loadAndProcessMono,
+            (arg("image_file"), arg("timestamp"), arg("imu_measurements") = noImu))
+        .def("process_image_mono", &ORBSlamPython::processMono,
+            (arg("image"), arg("timestamp"), arg("imu_measurements") = noImu))
+        .def("load_and_process_stereo", &ORBSlamPython::loadAndProcessStereo,
+            (arg("left_image_file"), arg("right_image_file"), arg("timestamp"), arg("imu_measurements") = noImu))
+        .def("process_image_stereo", &ORBSlamPython::processStereo,
+            (arg("left_image"), arg("right_image"), arg("timestamp"), arg("imu_measurements") = noImu))
+        .def("load_and_process_rgbd", &ORBSlamPython::loadAndProcessRGBD,
+            (arg("image_file"), arg("depth_image_file"), arg("timestamp"), arg("imu_measurements") = noImu))
+        .def("process_image_rgbd", &ORBSlamPython::processRGBD,
+            (arg("image"), arg("depth_image"), arg("timestamp"), arg("imu_measurements") = noImu))
         .def("shutdown", &ORBSlamPython::shutdown)
         .def("is_running", &ORBSlamPython::isRunning)
         .def("reset", &ORBSlamPython::reset)
         .def("set_mode", &ORBSlamPython::setMode)
         .def("set_use_viewer", &ORBSlamPython::setUseViewer)
-        .def("set_agent_name", &ORBSlamPython::setAgentName)
         .def("get_keyframe_points", &ORBSlamPython::getKeyframePoints)
         .def("get_trajectory_points", &ORBSlamPython::getTrajectoryPoints)
         .def("get_tracked_mappoints", &ORBSlamPython::getTrackedMappoints)
         .def("get_tracked_features", &ORBSlamPython::getTrackedFeatures)
-        .def("get_high_quality_mappoints", &ORBSlamPython::getHighQualityMappoints)
-        .def("pop_new_high_quality_mappoints", &ORBSlamPython::popNewHighQualityMappoints)
         .def("get_tracking_state", &ORBSlamPython::getTrackingState)
         .def("get_num_features", &ORBSlamPython::getNumFeatures)
         .def("get_num_matched_features", &ORBSlamPython::getNumMatches)
@@ -75,11 +118,10 @@ BOOST_PYTHON_MODULE(orbslam2)
         .staticmethod("load_settings_file");
 }
 
-ORBSlamPython::ORBSlamPython(std::string vocabFile, std::string settingsFile, ORB_SLAM2::System::eSensor sensorMode, std::string agentName)
+ORBSlamPython::ORBSlamPython(std::string vocabFile, std::string settingsFile, ORB_SLAM3::System::eSensor sensorMode)
     : vocabluaryFile(vocabFile),
     settingsFile(settingsFile),
     sensorMode(sensorMode),
-    agentName(agentName),
     system(nullptr),
     bUseViewer(false),
     bUseRGB(true)
@@ -87,11 +129,10 @@ ORBSlamPython::ORBSlamPython(std::string vocabFile, std::string settingsFile, OR
 
 }
 
-ORBSlamPython::ORBSlamPython(const char* vocabFile, const char* settingsFile, ORB_SLAM2::System::eSensor sensorMode, const char* agentName)
+ORBSlamPython::ORBSlamPython(const char* vocabFile, const char* settingsFile, ORB_SLAM3::System::eSensor sensorMode)
     : vocabluaryFile(vocabFile),
     settingsFile(settingsFile),
     sensorMode(sensorMode),
-    agentName(agentName),
     system(nullptr),
     bUseViewer(false),
     bUseRGB(true)
@@ -105,7 +146,7 @@ ORBSlamPython::~ORBSlamPython()
 
 bool ORBSlamPython::initialize()
 {
-    system = std::make_shared<ORB_SLAM2::System>(vocabluaryFile, settingsFile, sensorMode, bUseViewer, agentName);
+    system = std::make_shared<ORB_SLAM3::System>(vocabluaryFile, settingsFile, sensorMode, bUseViewer);
     return true;
 }
 
@@ -122,7 +163,41 @@ void ORBSlamPython::reset()
     }
 }
 
-bool ORBSlamPython::loadAndProcessMono(std::string imageFile, double timestamp)
+// Helper: convert the optional python IMU measurements into ORB_SLAM3 IMU points.
+// Accepts None or any sequence of 7-element rows (e.g. an Nx7 numpy array) laid
+// out as (acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, timestamp), with the
+// accelerometer in m/s^2, the gyroscope in rad/s and the timestamp in seconds.
+static std::vector<ORB_SLAM3::IMU::Point> imuPointsFromPython(const boost::python::object& measurements)
+{
+    std::vector<ORB_SLAM3::IMU::Point> points;
+    if (measurements.is_none())
+    {
+        return points;
+    }
+
+    const long count = boost::python::len(measurements);
+    points.reserve(count);
+    for (long i = 0; i < count; i++)
+    {
+        boost::python::object row = measurements[i];
+        if (boost::python::len(row) != 7)
+        {
+            PyErr_SetString(PyExc_ValueError, "IMU measurements must be rows of (acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, timestamp)");
+            boost::python::throw_error_already_set();
+        }
+        points.emplace_back(
+            boost::python::extract<float>(row[0]),
+            boost::python::extract<float>(row[1]),
+            boost::python::extract<float>(row[2]),
+            boost::python::extract<float>(row[3]),
+            boost::python::extract<float>(row[4]),
+            boost::python::extract<float>(row[5]),
+            boost::python::extract<double>(row[6]));
+    }
+    return points;
+}
+
+bool ORBSlamPython::loadAndProcessMono(std::string imageFile, double timestamp, boost::python::object imuMeasurements)
 {
     if (!system)
     {
@@ -133,10 +208,10 @@ bool ORBSlamPython::loadAndProcessMono(std::string imageFile, double timestamp)
     {
         cv::cvtColor(im, im, cv::COLOR_BGR2RGB);
     }
-    return this->processMono(im, timestamp);
+    return this->processMono(im, timestamp, imuMeasurements);
 }
 
-bool ORBSlamPython::processMono(cv::Mat image, double timestamp)
+bool ORBSlamPython::processMono(cv::Mat image, double timestamp, boost::python::object imuMeasurements)
 {
     if (!system)
     {
@@ -144,8 +219,10 @@ bool ORBSlamPython::processMono(cv::Mat image, double timestamp)
     }
     if (image.data)
     {
-        cv::Mat pose = system->TrackMonocular(image, timestamp);
-        return !pose.empty();
+        // ORB_SLAM3 always returns a pose (identity when there is none), so
+        // success is judged by the tracking state instead.
+        system->TrackMonocular(image, timestamp, imuPointsFromPython(imuMeasurements));
+        return system->GetTrackingState() == ORB_SLAM3::Tracking::eTrackingState::OK;
     }
     else
     {
@@ -153,7 +230,7 @@ bool ORBSlamPython::processMono(cv::Mat image, double timestamp)
     }
 }
 
-bool ORBSlamPython::loadAndProcessStereo(std::string leftImageFile, std::string rightImageFile, double timestamp)
+bool ORBSlamPython::loadAndProcessStereo(std::string leftImageFile, std::string rightImageFile, double timestamp, boost::python::object imuMeasurements)
 {
     if (!system)
     {
@@ -165,18 +242,18 @@ bool ORBSlamPython::loadAndProcessStereo(std::string leftImageFile, std::string 
         cv::cvtColor(leftImage, leftImage, cv::COLOR_BGR2RGB);
         cv::cvtColor(rightImage, rightImage, cv::COLOR_BGR2RGB);
     }
-    return this->processStereo(leftImage, rightImage, timestamp);
+    return this->processStereo(leftImage, rightImage, timestamp, imuMeasurements);
 }
 
-bool ORBSlamPython::processStereo(cv::Mat leftImage, cv::Mat rightImage, double timestamp)
+bool ORBSlamPython::processStereo(cv::Mat leftImage, cv::Mat rightImage, double timestamp, boost::python::object imuMeasurements)
 {
     if (!system)
     {
         return false;
     }
     if (leftImage.data && rightImage.data) {
-        cv::Mat pose = system->TrackStereo(leftImage, rightImage, timestamp);
-        return !pose.empty();
+        system->TrackStereo(leftImage, rightImage, timestamp, imuPointsFromPython(imuMeasurements));
+        return system->GetTrackingState() == ORB_SLAM3::Tracking::eTrackingState::OK;
     }
     else
     {
@@ -184,7 +261,7 @@ bool ORBSlamPython::processStereo(cv::Mat leftImage, cv::Mat rightImage, double 
     }
 }
 
-bool ORBSlamPython::loadAndProcessRGBD(std::string imageFile, std::string depthImageFile, double timestamp)
+bool ORBSlamPython::loadAndProcessRGBD(std::string imageFile, std::string depthImageFile, double timestamp, boost::python::object imuMeasurements)
 {
     if (!system)
     {
@@ -196,10 +273,10 @@ bool ORBSlamPython::loadAndProcessRGBD(std::string imageFile, std::string depthI
         cv::cvtColor(im, im, cv::COLOR_BGR2RGB);
     }
     cv::Mat imDepth = cv::imread(depthImageFile, cv::IMREAD_UNCHANGED);
-    return this->processRGBD(im, imDepth, timestamp);
+    return this->processRGBD(im, imDepth, timestamp, imuMeasurements);
 }
 
-bool ORBSlamPython::processRGBD(cv::Mat image, cv::Mat depthImage, double timestamp)
+bool ORBSlamPython::processRGBD(cv::Mat image, cv::Mat depthImage, double timestamp, boost::python::object imuMeasurements)
 {
     if (!system)
     {
@@ -207,8 +284,8 @@ bool ORBSlamPython::processRGBD(cv::Mat image, cv::Mat depthImage, double timest
     }
     if (image.data && depthImage.data)
     {
-        cv::Mat pose = system->TrackRGBD(image, depthImage, timestamp);
-        return !pose.empty();
+        system->TrackRGBD(image, depthImage, timestamp, imuPointsFromPython(imuMeasurements));
+        return system->GetTrackingState() == ORB_SLAM3::Tracking::eTrackingState::OK;
     }
     else
     {
@@ -225,21 +302,20 @@ void ORBSlamPython::shutdown()
     }
 }
 
-ORB_SLAM2::Tracking::eTrackingState ORBSlamPython::getTrackingState() const
+ORB_SLAM3::Tracking::eTrackingState ORBSlamPython::getTrackingState() const
 {
     if (system)
     {
-        return static_cast<ORB_SLAM2::Tracking::eTrackingState>(system->GetTrackingState());
+        return static_cast<ORB_SLAM3::Tracking::eTrackingState>(system->GetTrackingState());
     }
-    return ORB_SLAM2::Tracking::eTrackingState::SYSTEM_NOT_READY;
+    return ORB_SLAM3::Tracking::eTrackingState::SYSTEM_NOT_READY;
 }
 
 unsigned int ORBSlamPython::getNumFeatures() const
 {
     if (system)
     {
-        // This fork of ORB_SLAM2 no longer exposes the tracker, so we read the
-        // feature count from the keypoints of the most recently tracked frame.
+        // Read the feature count from the keypoints of the most recently tracked frame.
         return system->GetTrackedKeyPointsUn().size();
     }
     return 0;
@@ -249,14 +325,13 @@ unsigned int ORBSlamPython::getNumMatches() const
 {
     if (system)
     {
-        // This fork of ORB_SLAM2 no longer exposes the tracker (and therefore the
-        // per-frame outlier flags), so we approximate the match count using the
-        // map points associated with the most recently tracked frame.
-        std::vector<ORB_SLAM2::MapPoint*> trackedMapPoints = system->GetTrackedMapPoints();
+        // The tracker clears the outlier slots of the current frame, so the
+        // valid map points it still holds are the matched features.
+        std::vector<ORB_SLAM3::MapPoint*> trackedMapPoints = system->GetTrackedMapPoints();
         unsigned int matches = 0;
         for (size_t i = 0; i < trackedMapPoints.size(); ++i)
         {
-            ORB_SLAM2::MapPoint* pMP = trackedMapPoints[i];
+            ORB_SLAM3::MapPoint* pMP = trackedMapPoints[i];
             if (pMP && !pMP->isBad() && pMP->Observations() > 0)
             {
                 ++matches;
@@ -267,6 +342,19 @@ unsigned int ORBSlamPython::getNumMatches() const
     return 0;
 }
 
+// Helper: convert a camera-to-world pose into a python tuple of the timestamp
+// followed by the row-major 3x4 [R | t] matrix.
+static boost::python::tuple poseToTuple(double timestamp, const Sophus::SE3f& Twc)
+{
+    const Eigen::Matrix3f R = Twc.rotationMatrix();
+    const Eigen::Vector3f t = Twc.translation();
+    return boost::python::make_tuple(
+        timestamp,
+        R(0,0), R(0,1), R(0,2), t(0),
+        R(1,0), R(1,1), R(1,2), t(1),
+        R(2,0), R(2,1), R(2,2), t(2));
+}
+
 boost::python::list ORBSlamPython::getKeyframePoints() const
 {
     if (!system)
@@ -274,43 +362,22 @@ boost::python::list ORBSlamPython::getKeyframePoints() const
         return boost::python::list();
     }
 
-    // This is copied from the ORB_SLAM2 System.SaveKeyFrameTrajectoryTUM function, with some changes to output a python tuple.
-    // This fork makes the map public (mpMap) but no longer exposes System::GetKeyFrames().
-    vector<ORB_SLAM2::KeyFrame*> vpKFs = system->mpMap->GetAllKeyFrames();
-    std::sort(vpKFs.begin(), vpKFs.end(), ORB_SLAM2::KeyFrame::lId);
-
-    // Transform all keyframes so that the first keyframe is at the origin.
-    // After a loop closure the first keyframe might not be at the origin.
-    //cv::Mat Two = vpKFs[0]->GetPoseInverse();
+    // This is copied from the ORB_SLAM3 System.SaveKeyFrameTrajectoryTUM function, with some changes to output a python tuple.
+    // The atlas only returns the keyframes of the active map.
+    ORB_SLAM3::Atlas* atlas = system.get()->*memberPointer(SystemAtlas());
+    vector<ORB_SLAM3::KeyFrame*> vpKFs = atlas->GetAllKeyFrames();
+    std::sort(vpKFs.begin(), vpKFs.end(), ORB_SLAM3::KeyFrame::lId);
 
     boost::python::list trajectory;
 
     for(size_t i=0; i<vpKFs.size(); i++)
     {
-        ORB_SLAM2::KeyFrame* pKF = vpKFs[i];
-
-        // pKF->SetPose(pKF->GetPose()*Two);
+        ORB_SLAM3::KeyFrame* pKF = vpKFs[i];
 
         if(pKF->isBad())
             continue;
 
-        cv::Mat R = pKF->GetRotation().t();
-        cv::Mat t = pKF->GetCameraCenter();
-        trajectory.append(boost::python::make_tuple(
-                              pKF->mTimeStamp,
-                              R.at<float>(0,0),
-                              R.at<float>(0,1),
-                              R.at<float>(0,2),
-                              t.at<float>(0),
-                              R.at<float>(1,0),
-                              R.at<float>(1,1),
-                              R.at<float>(1,2),
-                              t.at<float>(1),
-                              R.at<float>(2,0),
-                              R.at<float>(2,1),
-                              R.at<float>(2,2),
-                              t.at<float>(2)
-                              ));
+        trajectory.append(poseToTuple(pKF->mTimeStamp, pKF->GetPoseInverse()));
     }
 
     return trajectory;
@@ -318,22 +385,18 @@ boost::python::list ORBSlamPython::getKeyframePoints() const
 
 // Helper: convert a vector of map points into a python list of (x, y, z) tuples,
 // skipping null / bad points.
-static boost::python::list mapPointsToList(const std::vector<ORB_SLAM2::MapPoint*>& mps)
+static boost::python::list mapPointsToList(const std::vector<ORB_SLAM3::MapPoint*>& mps)
 {
     boost::python::list map_points;
     for (size_t i = 0; i < mps.size(); i++)
     {
-        ORB_SLAM2::MapPoint* pMP = mps[i];
+        ORB_SLAM3::MapPoint* pMP = mps[i];
         if (!pMP || pMP->isBad())
         {
             continue;
         }
-        cv::Mat wp = pMP->GetWorldPos();
-        map_points.append(boost::python::make_tuple(
-            wp.at<float>(0,0),
-            wp.at<float>(1,0),
-            wp.at<float>(2,0)
-            ));
+        Eigen::Vector3f wp = pMP->GetWorldPos();
+        map_points.append(boost::python::make_tuple(wp(0), wp(1), wp(2)));
     }
     return map_points;
 }
@@ -364,49 +427,27 @@ boost::python::list ORBSlamPython::getTrackedFeatures() const
     // triangulated and associated with a landmark, so null/bad entries (2D-only
     // features) are skipped here.
     std::vector<cv::KeyPoint> keypoints = system->GetTrackedKeyPointsUn();
-    std::vector<ORB_SLAM2::MapPoint*> mapPoints = system->GetTrackedMapPoints();
+    std::vector<ORB_SLAM3::MapPoint*> mapPoints = system->GetTrackedMapPoints();
 
     boost::python::list features;
     size_t n = std::min(keypoints.size(), mapPoints.size());
     for (size_t i = 0; i < n; i++)
     {
-        ORB_SLAM2::MapPoint* pMP = mapPoints[i];
+        ORB_SLAM3::MapPoint* pMP = mapPoints[i];
         if (!pMP || pMP->isBad())
         {
             continue;
         }
-        cv::Mat wp = pMP->GetWorldPos();
+        Eigen::Vector3f wp = pMP->GetWorldPos();
         features.append(boost::python::make_tuple(
             keypoints[i].pt.x,
             keypoints[i].pt.y,
-            wp.at<float>(0,0),
-            wp.at<float>(1,0),
-            wp.at<float>(2,0)
+            wp(0),
+            wp(1),
+            wp(2)
             ));
     }
     return features;
-}
-
-boost::python::list ORBSlamPython::getHighQualityMappoints() const
-{
-    if (!system)
-    {
-        return boost::python::list();
-    }
-    // High-quality map points are a feature of this fork: the HQ manager flags a
-    // subset of the map as high quality for multi-agent sharing.
-    return mapPointsToList(system->GetHighQualityMapPoints());
-}
-
-boost::python::list ORBSlamPython::popNewHighQualityMappoints()
-{
-    if (!system)
-    {
-        return boost::python::list();
-    }
-    // Returns (and clears) the high-quality map points that have been newly
-    // promoted since the last call.
-    return mapPointsToList(system->PopNewHighQualityMapPoints());
 }
 
 boost::python::list ORBSlamPython::getTrajectoryPoints() const
@@ -416,46 +457,63 @@ boost::python::list ORBSlamPython::getTrajectoryPoints() const
         return boost::python::list();
     }
 
-    // The original bindings reconstructed the full per-frame trajectory from the
-    // tracker's relative frame poses (mlRelativeFramePoses / mlpReferences /
-    // mlFrameTimes), which the keyframe-only fallback could not reproduce (it was
-    // missing every intermediate, non-keyframe pose). The fork keeps the tracker
-    // private, so that reconstruction now lives in System::GetTrajectoryPoints(),
-    // which returns (timestamp, Tcw) pairs (Tcw = 4x4 world-to-camera transform).
-    std::vector<std::pair<double, cv::Mat>> traj = system->GetTrajectoryPoints();
+    // Reconstructs the full per-frame trajectory the same way ORB_SLAM3's
+    // System::SaveTrajectoryTUM / SaveTrajectoryEuRoC do: each frame's pose is
+    // stored relative to its reference keyframe, which is refined by BA and loop
+    // closure, so concatenating the two gives the up-to-date frame pose.
+    // Unlike those functions the poses are left in the map's world frame (rather
+    // than re-anchored on the first keyframe) so they line up with the map points.
+    ORB_SLAM3::Tracking* tracker = system.get()->*memberPointer(SystemTracker());
+    ORB_SLAM3::Atlas* atlas = system.get()->*memberPointer(SystemAtlas());
+
+    // ORB_SLAM3 starts a new map (with its own world frame) when tracking is lost,
+    // so only frames anchored in the active map are comparable.
+    ORB_SLAM3::Map* activeMap = atlas->GetCurrentMap();
 
     boost::python::list trajectory;
 
-    for (size_t i = 0; i < traj.size(); i++)
+    // For each frame we have a reference keyframe (lRit), the timestamp (lT) and a flag
+    // which is true when tracking failed (lbL).
+    list<ORB_SLAM3::KeyFrame*>::iterator lRit = tracker->mlpReferences.begin();
+    list<double>::iterator lT = tracker->mlFrameTimes.begin();
+    list<bool>::iterator lbL = tracker->mlbLost.begin();
+    for(list<Sophus::SE3f>::iterator lit=tracker->mlRelativeFramePoses.begin(),
+        lend=tracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++)
     {
-        const double timestamp = traj[i].first;
-        const cv::Mat& Tcw = traj[i].second;
+        if(*lbL)
+            continue;
 
-        // Camera-to-world rotation and the camera centre in world coordinates.
-        cv::Mat Rwc = Tcw.rowRange(0, 3).colRange(0, 3).t();
-        cv::Mat twc = -Rwc * Tcw.rowRange(0, 3).col(3);
+        // While RECENTLY_LOST without a pose estimate, the tracker records a copy
+        // of the previous entry (same timestamp, reference keyframe and relative
+        // pose) instead of flagging the frame as lost, so skip those copies.
+        if(lit != tracker->mlRelativeFramePoses.begin() && *lT == *std::prev(lT) &&
+           *lRit == *std::prev(lRit) && lit->params() == std::prev(lit)->params())
+            continue;
 
-        trajectory.append(boost::python::make_tuple(
-                            timestamp,
-                            Rwc.at<float>(0,0),
-                            Rwc.at<float>(0,1),
-                            Rwc.at<float>(0,2),
-                            twc.at<float>(0),
-                            Rwc.at<float>(1,0),
-                            Rwc.at<float>(1,1),
-                            Rwc.at<float>(1,2),
-                            twc.at<float>(1),
-                            Rwc.at<float>(2,0),
-                            Rwc.at<float>(2,1),
-                            Rwc.at<float>(2,2),
-                            twc.at<float>(2)
-                        ));
+        ORB_SLAM3::KeyFrame* pKF = *lRit;
+
+        Sophus::SE3f Trw;
+
+        // If the reference keyframe was culled, traverse the spanning tree to get a suitable keyframe.
+        while(pKF && pKF->isBad())
+        {
+            Trw = Trw * pKF->mTcp;
+            pKF = pKF->GetParent();
+        }
+
+        if(!pKF || pKF->GetMap() != activeMap)
+            continue;
+
+        Trw = Trw * pKF->GetPose();
+
+        Sophus::SE3f Tcw = (*lit) * Trw;
+        trajectory.append(poseToTuple(*lT, Tcw.inverse()));
     }
 
     return trajectory;
 }
 
-void ORBSlamPython::setMode(ORB_SLAM2::System::eSensor mode)
+void ORBSlamPython::setMode(ORB_SLAM3::System::eSensor mode)
 {
     sensorMode = mode;
 }
@@ -468,13 +526,6 @@ void ORBSlamPython::setUseViewer(bool useViewer)
 void ORBSlamPython::setRGBMode(bool rgb)
 {
     bUseRGB = rgb;
-}
-
-void ORBSlamPython::setAgentName(std::string name)
-{
-    // Only takes effect on the next initialize(); the agent name is passed to the
-    // ORB_SLAM2 System constructor.
-    agentName = name;
 }
 
 bool ORBSlamPython::saveSettings(boost::python::dict settings) const
